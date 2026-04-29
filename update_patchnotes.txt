@@ -1,0 +1,6 @@
+v1.0.0
+- Initial release
+- Real-time Claude.ai usage tracking
+- Session and weekly token caps with progress bars
+- Per-conversation token counting
+- Reset time countdowns
