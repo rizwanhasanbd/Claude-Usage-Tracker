@@ -1,42 +1,138 @@
-# Claude Usage Tracker
+<div align="center">
 
-A Chrome browser extension that tracks Claude.ai usage limits, token counts, and conversation costs in real time. Stats are injected directly into the Claude.ai interface.
+# 📊 Claude Usage Tracker
 
-## Features
+**A lightweight Chrome extension that shows your Claude.ai usage limits, token counts, and costs in real time — right inside the Claude interface.**
 
-- Real-time session and weekly usage tracking
-- Per-model token counting (Opus, Sonnet, Haiku)
-- Cost estimation with model weight multipliers
-- Conversation cache expiration awareness
-- Reset time countdowns
-- Optional Anthropic API integration for precise token counts (bring your own key)
-- Debug logs for troubleshooting
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/rizwanhasanbd/Claude-Usage-Tracker/releases)
+[![Manifest](https://img.shields.io/badge/manifest-v3-green.svg)](https://developer.chrome.com/docs/extensions/mv3/intro/)
+[![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-## Installation
+</div>
 
-1. Download or clone this repository
-2. Open Chrome and go to `chrome://extensions` 
-3. Enable **Developer mode** (top-right toggle)
+---
+
+## ✨ Why use it?
+
+If you've ever hit a Claude rate limit mid-conversation and wondered *"how close was I?"* — this extension solves that. It quietly tracks your session and weekly usage, breaks down tokens per model, and shows everything inline so you never have to guess again.
+
+## 🚀 Features
+
+- 🔴 **Real-time tracking** — session and weekly usage updated as you chat
+- 🧠 **Per-model breakdown** — separate counters for Opus, Sonnet, and Haiku
+- 💰 **Cost estimation** — applies official model weight multipliers
+- ⏱️ **Reset countdowns** — know exactly when your limits refresh
+- 💾 **Cache awareness** — accounts for conversation cache expiration
+- 🔑 **Optional API integration** — bring your own Anthropic key for exact token counts
+- 🐛 **Debug logs** — built-in viewer for troubleshooting
+- 🛡️ **100% local** — no tracking, no analytics, no external servers
+
+---
+
+## 📦 Installation
+
+> No Chrome Web Store listing yet — install manually in under a minute.
+
+1. **Download** the latest release or clone the repo:
+   ```bash
+   git clone https://github.com/rizwanhasanbd/Claude-Usage-Tracker.git
+   ```
+2. Open Chrome and navigate to `chrome://extensions`
+3. Toggle **Developer mode** (top-right corner)
 4. Click **Load unpacked** and select the project folder
-5. Visit [claude.ai](https://claude.ai) — usage stats appear automatically in the sidebar
+5. Visit [claude.ai](https://claude.ai) — usage stats appear automatically ✅
 
-## Optional: API Key Setup
+---
 
-For exact token counts (instead of local estimation), open the extension popup, click the API key field, and paste your Anthropic API key. The key is stored locally in browser storage and never transmitted anywhere except the official Anthropic API.
+## 🔑 Optional: API Key Setup
 
-## Project Structure
+For **exact** token counts instead of local estimates:
 
-- `background.js` — service worker, request interception
-- `bg-components/` — token management, API logic, storage utilities
-- `content-components/` — UI injection into Claude.ai
-- `injections/` — webRequest polyfill
-- `popup.html` / `popup.js` — extension popup
-- `debug.html` / `debug.js` — debug log viewer
+1. Click the extension icon in your Chrome toolbar
+2. Paste your [Anthropic API key](https://console.anthropic.com/settings/keys) into the popup
+3. Done — counts are now precise
 
-## Author
+> 🔒 **Your key stays local.** It's stored in Chrome's encrypted storage and only sent to Anthropic's official API. Nothing else.
 
-rizwanhasanbd
+---
 
-## Repository
+## 🗂️ Project Structure
 
-https://github.com/rizwanhasanbd/
+```
+
+Claude-Usage-Tracker/
+
+├── background.js              # Service worker + request interception
+
+├── bg-components/             # Token logic, API client, storage utils
+
+├── content-components/        # UI injection into Claude.ai
+
+├── injections/                # webRequest polyfill
+
+├── popup.html / popup.js      # Toolbar popup
+
+├── debug.html / debug.js      # Debug log viewer
+
+├── tracker-styles.css         # Styling
+
+└── manifest.json              # Manifest V3 config
+```
+
+---
+
+## 🛠️ Tech Stack
+
+- **JavaScript** (95%) — core logic
+- **HTML / CSS** — UI
+- **Chrome Extension Manifest V3** — modern, secure extension architecture
+
+---
+
+## ❓ Troubleshooting
+
+<details>
+<summary><b>Stats aren't showing up</b></summary>
+
+- Refresh claude.ai after installing
+- Confirm the extension is enabled in `chrome://extensions`
+- Check the debug log via the popup → Debug
+</details>
+
+<details>
+<summary><b>Token counts seem off</b></summary>
+
+- Local estimates are approximate. Add your Anthropic API key for exact counts.
+</details>
+
+<details>
+<summary><b>Extension stopped working after a Claude.ai update</b></summary>
+
+- Open an issue with details — Claude.ai's UI changes occasionally and the extension may need a patch.
+</details>
+
+---
+
+## 🤝 Contributing
+
+Contributions, bug reports, and feature requests are welcome! 
+
+1. Fork the repo
+2. Create a branch (`git checkout -b feature/your-feature`)
+3. Commit your changes
+4. Push and open a Pull Request
+
+---
+
+## 📄 License
+
+Released under the [MIT License](LICENSE).
+
+---
+
+## 👤 Author
+
+**Rizwan Hasan** — [@rizwanhasanbd](https://github.com/rizwanhasanbd)
+
+If this extension saves you time, drop a ⭐ on the repo!
