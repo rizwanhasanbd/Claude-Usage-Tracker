@@ -6,8 +6,6 @@
 
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/rizwanhasanbd/Claude-Usage-Tracker/releases)
 [![Manifest](https://img.shields.io/badge/manifest-v3-green.svg)](https://developer.chrome.com/docs/extensions/mv3/intro/)
-[![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 </div>
 
@@ -79,55 +77,6 @@ Claude-Usage-Tracker/
 
 └── manifest.json              # Manifest V3 config
 ```
-
----
-
-## 🛠️ Tech Stack
-
-- **JavaScript** (95%) — core logic
-- **HTML / CSS** — UI
-- **Chrome Extension Manifest V3** — modern, secure extension architecture
-
----
-
-## ❓ Troubleshooting
-
-<details>
-<summary><b>Stats aren't showing up</b></summary>
-
-- Refresh claude.ai after installing
-- Confirm the extension is enabled in `chrome://extensions`
-- Check the debug log via the popup → Debug
-</details>
-
-<details>
-<summary><b>Token counts seem off</b></summary>
-
-- Local estimates are approximate. Add your Anthropic API key for exact counts.
-</details>
-
-<details>
-<summary><b>Extension stopped working after a Claude.ai update</b></summary>
-
-- Open an issue with details — Claude.ai's UI changes occasionally and the extension may need a patch.
-</details>
-
----
-
-## 🤝 Contributing
-
-Contributions, bug reports, and feature requests are welcome! 
-
-1. Fork the repo
-2. Create a branch (`git checkout -b feature/your-feature`)
-3. Commit your changes
-4. Push and open a Pull Request
-
----
-
-## 📄 License
-
-Released under the [MIT License](LICENSE).
 
 ---
 
