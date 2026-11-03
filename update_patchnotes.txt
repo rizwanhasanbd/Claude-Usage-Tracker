@@ -1,6 +1,3 @@
-v1.0.0
-- Initial release
-- Real-time Claude.ai usage tracking
-- Session and weekly token caps with progress bars
-- Per-conversation token counting
-- Reset time countdowns
+Re-synced with the current claude.ai: new SSE-based usage tracking, updated subscription tier detection and new model limits
+Usage bars now also show on claude.ai/code pages
+Multi-language UI, unified settings window, cleaned-up sidebar footer (promo links removed)

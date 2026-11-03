@@ -1,615 +1,209 @@
-/* global Log, RED_WARNING, BLUE_HIGHLIGHT, sendBackgroundMessage, SUCCESS_GREEN */
 'use strict';
 
-const DONATION_1M = 1000000;
-const DONATION_10M = 10000000;
+// Settings modal and the version-update card (common/ui/cards.js).
 
-function openDebugOverlay() {
-	// Remove existing overlay if present
-	const existing = document.getElementById('ut-debug-overlay');
-	if (existing) { existing.remove(); return; }
+// ======== Settings modal ========
 
-	const overlay = document.createElement('div');
-	overlay.id = 'ut-debug-overlay';
-	overlay.style.cssText = 'position:;inset:0;z-index:99999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;';
+// A titled block of settings. Heavier than the control labels, so the blocks read as groups.
+function settingsSection(title) {
+	const section = document.createElement('div');
+	section.style.marginBottom = '14px';
 
-	const closeBtn = document.createElement('button');
-	closeBtn.textContent = '\u00D7';
-	closeBtn.style.cssText = 'position:absolute;top:12px;right:16px;font-size:24px;background:none;border:none;color:#666;cursor:pointer;z-index:1;';
-	closeBtn.addEventListener('click', () => overlay.remove());
-
-	const iframe = document.createElement('iframe');
-	iframe.src = browser.runtime.getURL('debug.html');
-	iframe.style.cssText = 'width:90vw;height:90vh;border:none;border-radius:8px;';
-
-	overlay.appendChild(closeBtn);
-	overlay.appendChild(iframe);
-	overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-	document.body.appendChild(overlay);
+	const heading = document.createElement('div');
+	heading.className = 'text-sm text-text-100 select-none';
+	heading.style.fontWeight = '600';
+	heading.style.marginBottom = '6px';
+	heading.textContent = title;
+	section.appendChild(heading);
+	return section;
 }
 
-// Draggable functionality for cards
-function makeDraggable(element, dragHandle = null) {
-	let isDragging = false;
-	let currentX;
-	let currentY;
-	let initialX;
-	let initialY;
-	let pointerId = null; // Track which pointer is dragging
+// Adds a labelled switch to a section and returns its checkbox input.
+function settingsToggle(section, label, checked, onChange = null) {
+	const { container, input } = createClaudeToggle(label, checked, onChange);
+	container.classList.add('text-sm');
+	container.style.marginBottom = '6px';
+	section.appendChild(container);
+	return input;
+}
 
-	// If no specific drag handle is provided, the entire element is draggable
-	const dragElement = dragHandle || element;
+// Nothing here persists until Save. Every control holds its value in the DOM, so Cancel discards
+// (the modal is rebuilt from storage on each open), and Save commits the lot and reloads: the
+// reload re-applies everything, instead of each control patching the live UI itself.
+async function showSettingsModal() {
+	const [apiKey, resetEnabled, resetThreshold, extraAgainstLimit, stored, sidebarPrefs, isElectron] = await Promise.all([
+		sendBackgroundMessage({ type: 'getAPIKey' }),
+		sendBackgroundMessage({ type: 'getResetNotifEnabled' }),
+		sendBackgroundMessage({ type: 'getResetNotifThreshold' }),
+		sendBackgroundMessage({ type: 'getExtraUsageAgainstLimit' }),
+		browser.storage.local.get(LENGTH_DISPLAY_KEY),
+		getSidebarDisplayPrefs(),
+		sendBackgroundMessage({ type: 'isElectron' }),
+	]);
 
-	function handleDragStart(e) {
-		// Only start dragging if we're not already dragging
-		if (isDragging) return;
+	// Flex rather than grid: each column takes only the width its content needs, and the right
+	// column wraps below the left once the modal gets too narrow (phones).
+	const columns = document.createElement('div');
+	columns.style.display = 'flex';
+	columns.style.flexWrap = 'wrap';
+	columns.style.gap = '0 28px';
+	columns.style.alignItems = 'flex-start';
 
-		isDragging = true;
-		pointerId = e.pointerId;
+	const leftColumn = document.createElement('div');
+	leftColumn.style.flex = '1 1 240px';
+	const rightColumn = document.createElement('div');
+	rightColumn.style.flex = '1 1 200px';
+	columns.append(leftColumn, rightColumn);
 
-		// Capture the pointer to this element
-		dragElement.setPointerCapture(e.pointerId);
+	// API key
+	const apiSection = settingsSection(localize('card.section_api_key'));
+	// Not localized on purpose: it's the literal key prefix, the same in every language. It also
+	// doubles as the "no key set" tell - a password field with a value renders dots.
+	const apiKeyInput = createClaudeInput({ type: 'password', placeholder: 'sk-ant-...', value: apiKey || '' });
+	apiKeyInput.classList.add('text-sm');
+	apiSection.appendChild(apiKeyInput);
+	leftColumn.appendChild(apiSection);
 
-		initialX = e.clientX - element.offsetLeft;
-		initialY = e.clientY - element.offsetTop;
+	// Reset notifications: the switch, then the usage % at which the notification gets armed
+	const resetSection = settingsSection(localize('card.reset_notif_toggle'));
+	const thresholdRow = document.createElement('div');
+	thresholdRow.className = 'flex items-center gap-2 text-sm';
 
-		dragElement.style.cursor = 'grabbing';
+	const thresholdLabel = document.createElement('label');
+	thresholdLabel.htmlFor = 'ut-reset-notif-threshold';
+	thresholdLabel.style.whiteSpace = 'nowrap';
+	thresholdLabel.textContent = localize('card.reset_notif_threshold');
 
-		// Prevent text selection during drag
-		e.preventDefault();
-	}
+	const thresholdInput = createClaudeInput({ type: 'number', value: resetThreshold ?? 100 });
+	thresholdInput.id = 'ut-reset-notif-threshold';
+	thresholdInput.min = '1';
+	thresholdInput.max = '100';
+	thresholdInput.step = '1';
+	thresholdInput.classList.add('text-sm');
+	thresholdInput.style.width = '72px';
+	// Clamped as you type for immediate feedback; persisted on Save.
+	thresholdInput.addEventListener('change', () => {
+		const n = Number(thresholdInput.value);
+		thresholdInput.value = Number.isFinite(n) ? Math.min(100, Math.max(1, Math.round(n))) : 100;
+	});
 
-	function handleDragMove(e) {
-		if (!isDragging || e.pointerId !== pointerId) return;
-		e.preventDefault();
+	const thresholdSuffix = document.createElement('span');
+	thresholdSuffix.textContent = '%';
+	thresholdRow.append(thresholdLabel, thresholdInput, thresholdSuffix);
 
-		currentX = e.clientX - initialX;
-		currentY = e.clientY - initialY;
-
-		// Ensure the element stays within the viewport
-		const maxX = window.innerWidth - element.offsetWidth;
-		const maxY = window.innerHeight - element.offsetHeight;
-		currentX = Math.min(Math.max(0, currentX), maxX);
-		currentY = Math.min(Math.max(0, currentY), maxY);
-
-		element.style.left = `${currentX}px`;
-		element.style.top = `${currentY}px`;
-		element.style.right = 'auto';
-		element.style.bottom = 'auto';
-	}
-
-	function handleDragEnd(e) {
-		if (e.pointerId !== pointerId) return;
-
-		isDragging = false;
-		pointerId = null;
-		dragElement.style.cursor = dragHandle ? 'move' : 'grab';
-
-		// Release the pointer capture
-		dragElement.releasePointerCapture(e.pointerId);
-	}
-
-	// Pointer events (covers mouse, touch, and pen)
-	dragElement.addEventListener('pointerdown', handleDragStart);
-	dragElement.addEventListener('pointermove', handleDragMove);
-	dragElement.addEventListener('pointerup', handleDragEnd);
-	dragElement.addEventListener('pointercancel', handleDragEnd);
-
-	// Set initial cursor style
-	dragElement.style.cursor = dragHandle ? 'move' : 'grab';
-
-	// Prevent touch scrolling when dragging
-	dragElement.style.touchAction = 'none';
-
-	// Return a cleanup function
-	return () => {
-		dragElement.removeEventListener('pointerdown', handleDragStart);
-		dragElement.removeEventListener('pointermove', handleDragMove);
-		dragElement.removeEventListener('pointerup', handleDragEnd);
-		dragElement.removeEventListener('pointercancel', handleDragEnd);
+	// The threshold only means anything while notifications are on
+	const setThresholdEnabled = (enabled) => {
+		thresholdInput.disabled = !enabled;
+		thresholdRow.style.opacity = enabled ? '1' : '0.5';
 	};
-}
+	const resetToggle = settingsToggle(resetSection, localize('card.reset_notif_enabled'), resetEnabled === true, setThresholdEnabled);
+	setThresholdEnabled(resetToggle.checked);
+	resetSection.appendChild(thresholdRow);
+	leftColumn.appendChild(resetSection);
 
-// Base floating card class
-class FloatingCard {
-	constructor() {
-		// Electron needs extra top offset to clear the toolbar in the content pane
-		const isElectronClient = !!document.querySelector('.dframe-content-inner');
-		this.defaultPosition = { top: isElectronClient ? '40px' : '20px', right: '20px' };
-		this.element = document.createElement('div');
-		this.element.className = 'bg-bg-100 border border-border-400 text-text-000 ut-card';
+	// Language (shared with every extension using claude-ext-common)
+	const langSection = settingsSection(localize('card.section_language'));
+	const langSelect = createLanguageSelect();
+	langSelect.classList.add('text-sm');
+	langSection.appendChild(langSelect);
+	leftColumn.appendChild(langSection);
+
+	// Sidebar display: one switch per bar this account actually has, plus the footer links. Built
+	// from the live usage data, united with the stored keys so a bar hidden before its data loaded
+	// still has a way back on.
+	const sidebarSection = settingsSection(localize('card.section_sidebar_display'));
+	const sidebarBoxes = new Map();
+	const limitKeys = [...new Set([
+		...usageUI.availableLimitKeys(),
+		...Object.keys(sidebarPrefs).filter(key => !SIDEBAR_LINK_KEYS.includes(key)),
+	])];
+	for (const key of limitKeys) {
+		// Reuse the sidebar's own labels, minus their trailing colon (French writes " :").
+		const label = (usageUI.usageSection?.getLimitLabel(key) ?? key).replace(/\s*[:：]\s*$/, '');
+		sidebarBoxes.set(key, settingsToggle(sidebarSection, label, isSidebarItemVisible(sidebarPrefs, key)));
 	}
+	// Only the bug-report link remains in the sidebar footer.
+	const linkToggles = [['bugLink', 'card.sidebar_bug_link']];
+	linkToggles.forEach(([key, labelKey], i) => {
+		const input = settingsToggle(sidebarSection, localize(labelKey), isSidebarItemVisible(sidebarPrefs, key));
+		// Set the links apart from the bars above them.
+		if (i === 0 && limitKeys.length) sidebarSection.lastElementChild.style.marginTop = '10px';
+		sidebarBoxes.set(key, input);
+	});
+	rightColumn.appendChild(sidebarSection);
 
-	addCloseButton() {
-		const closeButton = document.createElement('button');
-		closeButton.className = 'ut-button ut-close text-base';
-		closeButton.style.color = BLUE_HIGHLIGHT;
-		closeButton.style.background = 'none';
-		closeButton.textContent = '×';
-		closeButton.addEventListener('click', () => this.remove());
-		this.element.appendChild(closeButton);
-	}
+	// Extra usage: measured against the monthly spend limit (issue #96, the default for new installs)
+	// or against what can actually be spent (the legacy behaviour, pinned for older installs).
+	const extraSection = settingsSection(localize('card.section_extra_usage'));
+	const extraAgainstLimitBox = settingsToggle(extraSection, localize('card.extra_usage_against_limit'), extraAgainstLimit === true);
+	rightColumn.appendChild(extraSection);
 
-	show(position) {
-		// If position is provided, use it instead of default
-		if (position) {
-			// Clear any previous position styles
-			['top', 'right', 'bottom', 'left'].forEach(prop => {
-				this.element.style[prop] = null;
-			});
-			// Apply new position
-			Object.entries(position).forEach(([key, value]) => {
-				this.element.style[key] = typeof value === 'number' ? `${value}px` : value;
-			});
-		} else {
-			// Apply default position
-			Object.entries(this.defaultPosition).forEach(([key, value]) => {
-				this.element.style[key] = value;
-			});
-		}
-		// On Electron, inject into content area so cards don't overlap window controls.
-		// Ensure the mount is a positioning context so `top`/`right` are relative to it.
-		const electronMount = document.querySelector('.dframe-content-inner');
-		if (electronMount) {
-			if (getComputedStyle(electronMount).position === 'static') {
-				electronMount.style.position = 'relative';
-			}
-			this.element.style.position = 'absolute';
-			electronMount.appendChild(this.element);
-		} else {
-			document.body.appendChild(this.element);
-		}
-	}
+	// Conversation stats (issue #66). On means shown; the stored flag is the inverse, so a missing
+	// key reads as the default "shown".
+	const lengthSection = settingsSection(localize('card.section_length_display'));
+	const lengthDisplayBox = settingsToggle(lengthSection, localize('card.length_display_show'), stored[LENGTH_DISPLAY_KEY] !== true);
+	rightColumn.appendChild(lengthSection);
 
-	makeCardDraggable(dragHandle = null) {
-		this.cleanup = makeDraggable(this.element, dragHandle);
-	}
+	const modal = new ClaudeModal(localize('card.settings_title'), columns);
+	modal.modal.style.maxWidth = '640px';
 
-	remove() {
-		if (this.cleanup) {
-			this.cleanup();
-		}
-		this.element.remove();
-	}
-}
-
-// Base class for notification cards with buttons (Ko-fi, QoL)
-class ButtonNotificationCard extends FloatingCard {
-	constructor() {
-		super();
-		this.element.classList.add('ut-text-center');
-		this.element.style.maxWidth = '250px';
-	}
-
-	addImageButton(href, imageFile, alt) {
-		const link = document.createElement('a');
-		link.href = href;
-		link.target = '_blank';
-		link.className = 'ut-block ut-text-center';
-		link.style.marginTop = '10px';
-
-		const img = document.createElement('img');
-		img.src = browser.runtime.getURL(imageFile);
-		img.height = 36;
-		img.style.border = '0';
-		img.alt = alt;
-		link.appendChild(img);
-
-		this.element.appendChild(link);
-		return link;
-	}
-
-	addKofiButton() {
-		this.addImageButton('https://ko-fi.com/R6R14IUBY', 'kofi-button.png', 'Buy Me a Coffee at ko-fi.com');
-	}
-
-	addQoLButton() {
-		const hasQoL = document.documentElement.hasAttribute('data-claude-qol-installed');
-		if (hasQoL) return;
-	}
-
-	async addDesktopFooter() {
-		const isElectron = await sendBackgroundMessage({ type: 'isElectron' });
-		if (isElectron) return;
-
-		const footer = document.createElement('div');
-		footer.className = 'ut-desktop-footer';
-
-		const link = document.createElement('a');
-		link.href = 'https://github.com/lugia19/claude-webext-patcher';
-		link.target = '_blank';
-		link.className = 'ut-link';
-		link.style.color = BLUE_HIGHLIGHT;
-		link.textContent = 'Get the desktop version →';
-
-		footer.appendChild(link);
-		this.element.appendChild(footer);
-	}
-
-}
-
-// Version update notification card
-class VersionNotificationCard extends ButtonNotificationCard {
-	constructor(previousVersion, currentVersion, patchHighlights) {
-		super();
-		this.previousVersion = previousVersion;
-		this.currentVersion = currentVersion;
-		this.patchHighlights = patchHighlights;
-		this.build();
-	}
-
-	build() {
-		const dragHandle = document.createElement('div');
-		dragHandle.className = 'border-b border-border-400 ut-header';
-		dragHandle.textContent = 'Usage Tracker';
-
-		const message = document.createElement('div');
-		message.className = 'ut-mb-2';
-		message.textContent = `Updated from v${this.previousVersion} to v${this.currentVersion}!`;
-
-		this.element.appendChild(dragHandle);
-		this.element.appendChild(message);
-
-		if (this.patchHighlights?.length > 0) {
-			const patchContainer = document.createElement('div');
-			patchContainer.className = 'bg-bg-000 ut-content-box ut-text-left ut-mb-2';
-			patchContainer.style.maxHeight = '150px';
-
-			const patchTitle = document.createElement('div');
-			patchTitle.textContent = "What's New:";
-			patchTitle.style.fontWeight = 'bold';
-			patchTitle.className = 'ut-mb-1';
-			patchContainer.appendChild(patchTitle);
-
-			const patchList = document.createElement('ul');
-			patchList.style.paddingLeft = '12px';
-			patchList.style.margin = '0';
-			patchList.style.listStyleType = 'disc';
-
-			this.patchHighlights.forEach(highlight => {
-				const item = document.createElement('li');
-				item.textContent = highlight;
-				item.style.marginBottom = '3px';
-				item.style.paddingLeft = '3px';
-				patchList.appendChild(item);
-			});
-
-			patchContainer.appendChild(patchList);
-			this.element.appendChild(patchContainer);
-		}
-
-		const patchNotesLink = document.createElement('a');
-		patchNotesLink.href = 'https://github.com/lugia19/Claude-Usage-Extension/releases';
-		patchNotesLink.target = '_blank';
-		patchNotesLink.className = 'ut-link ut-block ut-mb-2';
-		patchNotesLink.style.color = BLUE_HIGHLIGHT;
-		patchNotesLink.textContent = 'View full release notes';
-		this.element.appendChild(patchNotesLink);
-
-		this.addKofiButton();
-		this.addQoLButton();
-		this.addDesktopFooter();
-
-		this.addCloseButton();
-		this.makeCardDraggable(dragHandle);
-	}
-}
-
-// Donation milestone notification card
-class DonationNotificationCard extends ButtonNotificationCard {
-	constructor(tokenMillions) {
-		super();
-		this.tokenMillions = tokenMillions;
-		this.build();
-	}
-
-	build() {
-		const dragHandle = document.createElement('div');
-		dragHandle.className = 'border-b border-border-400 ut-header';
-		dragHandle.textContent = 'Usage Tracker';
-
-		const message = document.createElement('div');
-		message.className = 'ut-mb-2';
-		message.textContent = `You've tracked over ${this.tokenMillions}M tokens!`;
-
-		const supportMessage = document.createElement('div');
-		supportMessage.className = 'ut-mb-2';
-		supportMessage.style.fontWeight = 'bold';
-		supportMessage.textContent = 'Consider supporting continued development';
-
-		this.element.appendChild(dragHandle);
-		this.element.appendChild(message);
-		this.element.appendChild(supportMessage);
-
-		this.addKofiButton();
-		this.addQoLButton();
-
-		this.addCloseButton();
-		this.makeCardDraggable(dragHandle);
-	}
-}
-
-// Rate extension notification card
-class RateNotificationCard extends ButtonNotificationCard {
-	constructor() {
-		super();
-		this.build();
-	}
-
-	build() {
-		const dragHandle = document.createElement('div');
-		dragHandle.className = 'border-b border-border-400 ut-header';
-		dragHandle.textContent = 'Usage Tracker';
-
-		const message = document.createElement('div');
-		message.className = 'ut-mb-2';
-		message.textContent = 'Enjoying the Usage Tracker?';
-
-		const supportMessage = document.createElement('div');
-		supportMessage.className = 'ut-mb-2';
-		supportMessage.style.fontWeight = 'bold';
-		supportMessage.textContent = 'Consider leaving a rating!';
-
-		this.element.appendChild(dragHandle);
-		this.element.appendChild(message);
-		this.element.appendChild(supportMessage);
-
-		this.addCloseButton();
-		this.makeCardDraggable(dragHandle);
-	}
-}
-
-// Settings card
-class SettingsCard extends FloatingCard {
-	static currentInstance = null;
-
-	constructor() {
-		super();
-		this.element.classList.add('settings-panel'); // Add the class for easier querying
-		this.element.style.maxWidth = '350px';
-	}
-
-	async build() {
-		const dragHandle = document.createElement('div');
-		dragHandle.className = 'border-b border-border-400 ut-header text-sm';
-		dragHandle.textContent = 'Settings';
-		this.element.appendChild(dragHandle);
-
-		const label = document.createElement('label');
-		label.className = 'ut-label text-sm';
-		label.textContent = 'API Key (more accurate):';
-
-		const input = document.createElement('input');
-		input.type = 'password';
-		input.className = 'bg-bg-000 border border-border-400 text-text-000 ut-input ut-w-full text-sm';
-		let apiKey = await sendBackgroundMessage({ type: 'getAPIKey' })
-		if (apiKey) input.value = apiKey
-
-		const saveButton = document.createElement('button');
-		saveButton.textContent = 'Save';
-		saveButton.className = 'ut-button text-sm';
-		saveButton.style.background = BLUE_HIGHLIGHT;
-		saveButton.style.color = 'white';
-
-		// Button container
-		const buttonContainer = document.createElement('div');
-		buttonContainer.className = 'ut-row';
-
-		const debugButton = document.createElement('button');
-		debugButton.textContent = 'Debug Logs';
-		debugButton.className = 'bg-bg-300 border border-border-400 text-text-400 ut-button text-sm';
-
-		// Event listeners
-		debugButton.addEventListener('click', async () => {
-			const result = await sendBackgroundMessage({ type: 'openDebugPage' });
-			if (result === 'fallback') {
-				openDebugOverlay();
-			}
-			this.remove();
-		});
-
-		saveButton.addEventListener('click', async () => {
-			let result = await sendBackgroundMessage({ type: 'setAPIKey', newKey: input.value });
-
-			if (!result) {
+	// Leaves the settings open underneath; the viewer is an overlay above it.
+	modal.addButton(localize('shared.view_debug_logs'), 'secondary', () => { openDebugLogs(); return false; });
+	modal.addCancel();
+	modal.addConfirm(localize('card.save'), async () => {
+		// The key is the only setting that can fail, and validating it hits the network, so only
+		// touch it when it actually changed.
+		if (apiKeyInput.value !== (apiKey || '')) {
+			const ok = await sendBackgroundMessage({ type: 'setAPIKey', newKey: apiKeyInput.value });
+			if (!ok) {
 				const errorMsg = document.createElement('div');
 				errorMsg.className = 'text-sm';
 				errorMsg.style.color = RED_WARNING;
-				errorMsg.textContent = input.value.startsWith('sk-ant')
-					? 'Inactive API key. Have you ever loaded credits to the account?'
-					: 'Invalid API key. Format looks wrong, it should start with sk-ant.';
-				input.after(errorMsg);
+				errorMsg.style.marginTop = '4px';
+				errorMsg.textContent = apiKeyInput.value.startsWith('sk-ant')
+					? localize('card.api_key_inactive')
+					: localize('card.api_key_invalid');
+				apiKeyInput.after(errorMsg);
 				setTimeout(() => errorMsg.remove(), 3000);
-				return;
-			}
-			location.reload();
-		});
-
-		// Reset notification toggle
-		const toggleContainer = document.createElement('div');
-		toggleContainer.className = 'ut-row';
-		toggleContainer.style.alignItems = 'start';
-		toggleContainer.style.gap = '6px';
-		toggleContainer.style.marginBottom = '8px';
-
-		const checkbox = document.createElement('input');
-		checkbox.type = 'checkbox';
-		checkbox.id = 'ut-reset-notif-toggle';
-		checkbox.checked = await sendBackgroundMessage({ type: 'getResetNotifEnabled' }) || false;
-		checkbox.addEventListener('change', () => {
-			sendBackgroundMessage({ type: 'setResetNotifEnabled', value: checkbox.checked });
-		});
-
-		const toggleLabel = document.createElement('label');
-		toggleLabel.htmlFor = 'ut-reset-notif-toggle';
-		toggleLabel.className = 'text-sm';
-		toggleLabel.innerHTML = 'Usage reset notifications';
-
-		toggleContainer.appendChild(checkbox);
-		toggleContainer.appendChild(toggleLabel);
-
-		// Assemble
-		this.element.appendChild(label);
-		this.element.appendChild(input);
-		buttonContainer.appendChild(saveButton);
-		buttonContainer.appendChild(debugButton);
-		this.element.appendChild(toggleContainer);
-		this.element.appendChild(buttonContainer);
-
-		this.addCloseButton();
-		this.makeCardDraggable(dragHandle);
-	}
-
-	show(position) {
-		if (SettingsCard.currentInstance) {
-			SettingsCard.currentInstance.remove();
-		}
-
-		if (position) {
-			// Get the card's width - we need to temporarily add it to the DOM to measure
-			this.element.style.visibility = 'hidden';
-			document.body.appendChild(this.element);
-			const cardWidth = this.element.offsetWidth;
-			this.element.remove();
-			this.element.style.visibility = 'visible';
-
-			// Check if card would overflow the right edge
-			if (position.left + cardWidth > window.innerWidth) {
-				// Adjust to align with left edge of screen with small margin
-				position.left = 8;
+				return false; // keep the modal open, and write nothing else
 			}
 		}
 
-		super.show(position);
-		SettingsCard.currentInstance = this;
-	}
+		// Merged over the stored object, so prefs for bars not listed this session survive.
+		const newSidebarPrefs = { ...sidebarPrefs };
+		for (const [key, box] of sidebarBoxes) newSidebarPrefs[key] = box.checked;
 
-	remove() {
-		super.remove();
-		if (SettingsCard.currentInstance === this) {
-			SettingsCard.currentInstance = null;
-		}
-	}
+		setLanguageOverride(langSelect.value);
+		await Promise.all([
+			sendBackgroundMessage({ type: 'setResetNotifEnabled', value: resetToggle.checked }),
+			sendBackgroundMessage({ type: 'setResetNotifThreshold', value: Number(thresholdInput.value) }),
+			sendBackgroundMessage({ type: 'setExtraUsageAgainstLimit', value: extraAgainstLimitBox.checked }),
+			browser.storage.local.set({ [LENGTH_DISPLAY_KEY]: !lengthDisplayBox.checked }),
+			setSidebarDisplayPrefs(newSidebarPrefs),
+		]);
+
+		location.reload();
+	});
+	modal.show();
 }
 
-// Floating cards actor - owns all card lifecycle
-class FloatingCardsUI {
-	constructor() {
-		this.setupEventListeners();
-		this.checkNotifications();
-	}
+document.addEventListener('ut:toggleSettings', () => {
+	showSettingsModal().catch(error => Log('error', 'Failed to open settings:', error));
+});
 
-	setupEventListeners() {
-		document.addEventListener('ut:toggleSettings', async (event) => {
-			await this.handleToggleSettings(event.detail);
+// The version-update card comes from common/ui/cards.js.
+(async () => {
+	try {
+		await localeReady;
+		await initNotificationCards({
+			name: localize('card.title'),
+			releasesUrl: 'https://github.com/rizwanhasanbd/Claude-Usage-Tracker/releases',
+			storage: {
+				get: async (key) => (await browser.storage.local.get(key))[key],
+				set: (key, value) => browser.storage.local.set({ [key]: value }),
+			},
 		});
+	} catch (error) {
+		await Log('error', 'Notification checks failed:', error);
 	}
-
-	async handleToggleSettings(detail) {
-		const position = detail?.position || null;
-
-		if (SettingsCard.currentInstance) {
-			SettingsCard.currentInstance.remove();
-		} else {
-			const settingsCard = new SettingsCard();
-			await settingsCard.build();
-			settingsCard.show(position);
-		}
-	}
-
-	async checkNotifications() {
-		// Delay to allow other extensions (like QoL) to load first
-		await new Promise(resolve => setTimeout(resolve, 1000));
-		await this.checkForVersionUpdate();
-		await this.checkForDonationMilestone();
-		await this.checkForRateReminder();
-	}
-
-	async checkForVersionUpdate() {
-		const currentVersion = browser.runtime.getManifest().version;
-		const storage = await browser.storage.local.get(['previousVersion']);
-		const previousVersion = storage.previousVersion;
-
-		// First install - don't show notification
-		if (!previousVersion) {
-			await browser.storage.local.set({ previousVersion: currentVersion });
-			return;
-		}
-
-		// No version change
-		if (previousVersion === currentVersion) {
-			return;
-		}
-
-		// Load patch notes
-		let patchHighlights = [];
-		try {
-			const patchNotesFile = await fetch(browser.runtime.getURL('update_patchnotes.txt'));
-			if (patchNotesFile.ok) {
-				const patchNotesText = await patchNotesFile.text();
-				patchHighlights = patchNotesText
-					.split('\n')
-					.filter(line => line.trim().length > 0);
-			}
-		} catch (error) {
-			await Log("error", "Failed to load patch notes:", error);
-		}
-
-		await browser.storage.local.set({ previousVersion: currentVersion });
-
-		const notificationCard = new VersionNotificationCard(previousVersion, currentVersion, patchHighlights);
-		notificationCard.show();
-	}
-
-	async checkForDonationMilestone() {
-		// Every 10M tokens tracked, rate limited to once per 30 days
-		const storage = await browser.storage.local.get(['lastDonationMilestone', 'lastDonationDate']);
-		const totalTokens = await sendBackgroundMessage({ type: 'getTotalTokensTracked' });
-
-		if (storage.lastDonationMilestone == null) {
-			const initial = totalTokens < DONATION_1M
-				? 0
-				: Math.ceil(totalTokens / DONATION_10M) * DONATION_10M;
-			await browser.storage.local.set({ lastDonationMilestone: initial });
-			return;
-		}
-
-		const last = storage.lastDonationMilestone;
-		console.log("Last donation milestone:", last, "Total tokens:", totalTokens);
-
-		let next;
-		if (last < DONATION_1M) next = DONATION_1M;
-		else if (last < DONATION_10M) next = DONATION_10M;
-		else next = last + DONATION_10M;
-
-		if (totalTokens < next) return;
-
-		if (storage.lastDonationDate && Date.now() - storage.lastDonationDate < 30 * 24 * 60 * 60 * 1000) return;
-
-		await browser.storage.local.set({ lastDonationMilestone: next, lastDonationDate: Date.now() });
-
-		const notificationCard = new DonationNotificationCard(Math.floor(next / DONATION_1M));
-		notificationCard.show();
-	}
-
-	async checkForRateReminder() {
-
-		const storage = await browser.storage.local.get(['rateReminderTime', 'rateReminderShown']);
-
-		if (!storage.rateReminderTime) {
-			await browser.storage.local.set({ rateReminderTime: Date.now() + 7 * 24 * 60 * 60 * 1000 });
-			return;
-		}
-
-		if (storage.rateReminderShown) return;
-		if (Date.now() < storage.rateReminderTime) return;
-
-		await browser.storage.local.set({ rateReminderShown: true });
-
-		const notificationCard = new RateNotificationCard();
-		notificationCard.show();
-	}
-}
-
-// Self-initialize
-const floatingCardsUI = new FloatingCardsUI();
+})();

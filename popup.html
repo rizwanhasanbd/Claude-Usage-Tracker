@@ -2,6 +2,8 @@
 <html>
 
 <head>
+	<meta charset="utf-8">
+	<link rel="stylesheet" href="tracker-styles.css">
 	<style>
 		:root {
 			--bg-primary: #1e1e1e;
@@ -55,16 +57,52 @@
 			transform: translateY(1px);
 		}
 
+		#usage-container {
+			margin-bottom: 12px;
+		}
+
+		.popup-loading, .popup-error, .popup-empty {
+			font-size: 12px;
+			color: #888;
+			padding: 4px 0;
+		}
+
+		.popup-org-header {
+			font-size: 11px;
+			color: #888;
+			margin-bottom: 4px;
+			padding-bottom: 2px;
+			border-bottom: 1px solid var(--border-color);
+		}
+
+		.popup-org-section {
+			margin-bottom: 8px;
+		}
+
+		.popup-org-section:last-child {
+			margin-bottom: 0;
+		}
+
+		.ut-progress-track {
+			background: #333;
+		}
 	</style>
 </head>
 
 <body>
-	<p>Not seeing your usage stats? Try refreshing the page or re-authorizing the extension. Stats are injected directly into the Claude page.</p>
+	<div id="usage-container">
+		<div class="popup-loading">Loading usage data...</div>
+	</div>
+	<p id="popup-help">If you clicked here because you can't find the usage stats, try reloading the page or authorizing the extension to run on claude.ai &mdash; the usage stats are injected directly into the page.</p>
 	<div class="button-container">
 		<button id="debug">Debug Logs</button>
 		<button id="github">GitHub</button>
 	</div>
 	<script src="lib/browser-polyfill.min.js"></script>
+	<script src="common/i18n/all.js"></script>
+	<script src="i18n/all.js"></script>
+	<script src="common/i18n/i18n-core.js"></script>
+	<script src="content-components/ui_dataclasses.js"></script>
 	<script src="popup.js"></script>
 </body>
 

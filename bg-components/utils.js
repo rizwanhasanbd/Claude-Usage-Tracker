@@ -1,19 +1,62 @@
+// Always-on logging (common/log/logger.js publishes createLogger/configureLogger on globalThis).
+import '../common/log/logger.js';
+// The background is the only writer of the debug log; content scripts send it their entries.
+configureLogger({ app: 'tracker', prefix: '[UsageTracker]', role: 'background' });
+
 // Configuration object (moved from constants.json)
 const CONFIG = {
 	"OUTPUT_TOKEN_MULTIPLIER": 4,
 	"MODELS": [
+		"Fable",
 		"Opus",
 		"Sonnet",
 		"Haiku"
 	],
+	// Cost weight per API model ID - the model's input price in $/MTok. Priced per model rather
+	// than per family because prices vary within a family (Opus 5.5 is cheaper than Opus 5, Sonnet
+	// 5 than Sonnet 4.6). Looked up by modelWeight() in shared/dataclasses.js.
+	//
+	// A model priced by prompt length takes the tiered form { weight, longWeight, longAbove }: past
+	// longAbove tokens of conversation, the message is priced at longWeight.
 	"MODEL_WEIGHTS": {
+		"claude-fable-5-1": 10,
+		"claude-fable-5": 10,
+		"claude-opus-5-5": 4,
+		"claude-opus-5": 5,
+		"claude-sonnet-5-5": 2,
+		"claude-haiku-5-5": { "weight": 0.1, "longWeight": 0.5, "longAbove": 100000 },
+		"claude-sonnet-5": 2,
+		"claude-opus-4-8": 5,
+		"claude-opus-4-7": 5,
+		"claude-sonnet-4-6": 3,
+		"claude-opus-4-6": 5,
+		"claude-opus-4-5-20251101": 5,
+		"claude-sonnet-4-5-20250929": 3,
+		"claude-haiku-4-5-20251001": 1,
+		"claude-3-opus-20240229": 15,
+	},
+	// Weight for a model ID not in MODEL_WEIGHTS (e.g. one released after this build), by family.
+	// Each errs toward the family's higher price - over-reporting a cost is the safe direction.
+	"FAMILY_MODEL_WEIGHTS": {
+		"Fable": 10,
 		"Opus": 5,
 		"Sonnet": 3,
 		"Haiku": 1
 	},
-	"DEFAULT_MODEL": "Opus",
+	// Weight to use when even the family is unknown. Opus-equivalent, erring high for the same reason.
+	"FALLBACK_MODEL_WEIGHT": 5,
 	"MODEL_VERSION_MAP": {
-		// DOM labels (lowercased) → API model IDs
+		// DOM labels (lowercased) → API model IDs.
+		// Matched with startsWith() in insertion order, so a longer label must come above
+		// any shorter label that prefixes it ("opus 5.1" above "opus 5").
+		"fable 5.1": "claude-fable-5-1",
+		"fable 5": "claude-fable-5",
+		"opus 5.5": "claude-opus-5-5",
+		"opus 5": "claude-opus-5",
+		"sonnet 5.5": "claude-sonnet-5-5",
+		"sonnet 5": "claude-sonnet-5",
+		"haiku 5.5": "claude-haiku-5-5",
+		"opus 4.8": "claude-opus-4-8",
 		"opus 4.7": "claude-opus-4-7",
 		"sonnet 4.6": "claude-sonnet-4-6",
 		"opus 4.6": "claude-opus-4-6",
@@ -22,18 +65,92 @@ const CONFIG = {
 		"haiku 4.5": "claude-haiku-4-5-20251001",
 		"opus 3": "claude-3-opus-20240229",
 	},
-	"DEFAULT_MODEL_VERSION": "claude-opus-4-7",
+	// claude.ai's default picker selection depends on the plan: Max lands on Opus,
+	// every other tier on Sonnet.
+	"DEFAULT_MODEL_VERSION_BY_TIER": {
+		"claude_free": "claude-sonnet-5-5",
+		"claude_pro": "claude-sonnet-5-5",
+		"claude_team": "claude-sonnet-5-5",
+		"claude_max_5x": "claude-opus-5-5",
+		"claude_max_20x": "claude-opus-5-5"
+	},
+	// Used only when the tier isn't known yet (e.g. a content script before the first
+	// updateUsage arrives). Matches the claude_free row, which is where an unresolvable
+	// tier already degrades to.
+	"DEFAULT_MODEL_VERSION": "claude-sonnet-5-5",
+	// Tokens priced for a merged-experience compaction summary. Its real size (CompactionDivider
+	// post_tokens) exists only in the new API, which this background can't call (see getData). Observed:
+	// 2629-9916, mean ~5.2K, and post_tokens itself overstated one measured summary by ~1.7x; summaries
+	// barely track the history they replace (1.4-5% of it), so a constant is about as good. Errs high.
+	"COMPACTION_SUMMARY_TOKENS": 6000,
 	"WARNING_THRESHOLD": 0.9,
 	"PEAK_SESSION_MULTIPLIER": 1.5,
 	"WARNING": {
 		"PERCENT_THRESHOLD": 0.9,
-		"LENGTH": 50000,
-		"COST": 250000
+		"LENGTH_FRACTION": 0.75, // of the next message's context window (CONTEXT_WINDOWS): earlier than the usage bars, so there's room to wrap up
+		"LENGTH": 500000, // total context, system prompt included (see SYSTEM_PROMPT_TOKENS); only for a model with no CONTEXT_WINDOWS entry
+		"COST": 1000000
 	},
-	"BASE_SYSTEM_PROMPT_LENGTH": 3200,
+	// Each model's context window, keyed like MODEL_WEIGHTS (API ID without its date suffix), as
+	// { chat, workspace: [window, compactAt] }. `chat` is a plain chat, from the help article's "Chat
+	// with Claude" table (support.claude.com 8606394, read 2026-10-09; 200K is its default for an
+	// unlisted model): it can't be measured. `workspace` is a workspace-upgraded chat, which runs on a
+	// Claude Code session: its get_context_usage maxTokens and autoCompactThreshold after the picker's
+	// set_model, measured 2026-10-09 (they don't match the article's Cowork column for Sonnet 5.5). The
+	// picker sends plain IDs, never a [1m] variant, so the 4.6 models get 200K there. A reading from the
+	// chat's own session beats this table (ConversationData.getContextWindow).
+	"CONTEXT_WINDOWS": {
+		"claude-fable-5-1": { chat: 1000000, workspace: [1000000, 967000] },
+		"claude-fable-5": { chat: 500000, workspace: [1000000, 967000] },
+		"claude-opus-5-5": { chat: 1000000, workspace: [1000000, 967000] },
+		"claude-opus-5": { chat: 1000000, workspace: [1000000, 967000] },
+		"claude-opus-4-8": { chat: 500000, workspace: [1000000, 967000] },
+		"claude-opus-4-7": { chat: 500000, workspace: [1000000, 967000] },
+		"claude-opus-4-6": { chat: 500000, workspace: [200000, 167000] },
+		"claude-opus-4-5": { chat: 200000, workspace: [200000, 167000] },
+		"claude-3-opus": { chat: 200000, workspace: [200000, 182904] },
+		"claude-sonnet-5-5": { chat: 1000000, workspace: [500000, 467000] },
+		"claude-sonnet-5": { chat: 1000000, workspace: [500000, 467000] },
+		"claude-sonnet-4-6": { chat: 500000, workspace: [200000, 167000] },
+		// Out of the picker, so its workspace figure can't be measured: assumed like Opus 4.5 and Haiku
+		// 4.5, the other pre-4.6 models. Still reached by conversations that used it.
+		"claude-sonnet-4-5": { chat: 200000, workspace: [200000, 167000] },
+		"claude-haiku-5-5": { chat: 1000000, workspace: [500000, 467000] },
+		"claude-haiku-4-5": { chat: 200000, workspace: [200000, 167000] },
+	},
+	// The fixed system prompt every conversation carries, in Claude's current (Opus 4.7+) tokenizer,
+	// measured on the merged-experience prompt 2026-10-08 (claude-ext-common scripts/bard/README.md,
+	// "Fixed overhead, current variant"). Static and in the cached prefix; tool definitions live here
+	// too, not on each request. Assumes the variant most chats get: some chats switch to a Claude Code
+	// variant after their environment is set up, ~7K smaller. Legacy accounts get the same figures.
+	"SYSTEM_PROMPT_TOKENS": {
+		"behavior": 28600,	// claude_behavior, agentic_behavior, search + copyright, image search, citations, end_conversation, thinking
+		"tools": 58500,		// the 60 built-in tool schemas
+		"skills": 5500,		// available_skills; per-account, measured with 22 skills
+		"trailing": 2300	// trailing system text plus the first turn's reminders
+	},
+	// Added when the account has conversation preferences: the section explaining how to apply them
+	// (the preference text itself is counted separately).
+	"PREFERENCES_SECTION_TOKENS": 2000,
+	// Prompt sections and tool schemas that only exist with a setting on, keyed by the flag
+	// getAccountSettings reports (same tokenizer and source as SYSTEM_PROMPT_TOKENS).
+	"FEATURE_PROMPT_TOKENS": {
+		"memory": 24800,				// memory_filesystem and its guidance + 6 memory tools (memory files not included)
+		"enabled_saffron_search": 3700,	// past_chats_tools + conversation_search, read_conversation, recent_chats
+		"inline_visuals": 4200			// visualizer sections + the visualize read_me / show_widget tools
+	},
 	"CACHING_MULTIPLIER": 0, // Seems to be free.
+	// o200k undercounts against Claude's real tokenizer; this closes the gap. Lives in CONFIG
+	// rather than on TokenCounter so the content script gets the same figure via getConfig —
+	// sse_bridge.js counts the streamed reply locally and must agree with the background.
+	"ESTIMATION_MULTIPLIER": 1.4,
 	"EXTRA_USAGE_CACHING_MULTIPLIER": 0.1, // Cache reads cost 10% of input during extra usage
-	"TOKEN_CACHING_DURATION_MS": 5 * 60 * 1000, // 5 minutes
+	// How close two reset timestamps must be to count as the same usage window. Lives in CONFIG,
+	// like ESTIMATION_MULTIPLIER and for the same reason: content-components/sse_bridge.js gets it
+	// via getConfig, and its in-page guard must agree with what storeSseUsage persists in
+	// bg-components/claude-api.js. Two copies of this number would drift.
+	"SSE_SAME_WINDOW_TOLERANCE_MS": 60 * 1000,
+	"TOKEN_CACHING_DURATION_MS": 60 * 60 * 1000, // 1 hour
 	"ESTIMATED_CAPS": {
 		// I have no idea. This is very napkin math.
 		"claude_free": {
@@ -45,9 +162,9 @@ const CONFIG = {
 
 		// V5.2 will do telemetry to refine these values
 		"claude_max_5x": {
-			"session": 7.5 * 10 ** 6,
-			"weekly": 75 * 10 ** 6,	// 10 sessions
-			"sonnetWeekly": 45 * 10 ** 6 // Same as weekly but compensated for sonnet
+			"session": 15 * 10 ** 6,
+			"weekly": 150 * 10 ** 6,	// 10 sessions
+			"sonnetWeekly": 90 * 10 ** 6 // Same as weekly but compensated for sonnet
 		},
 		"claude_max_20x": {}
 	}
@@ -79,6 +196,13 @@ function fillEstimatedCaps(caps) {
 		}
 	}
 
+	// fableWeekly is half of the (all-model) weekly cap on every tier that has one
+	for (const tier of tiers) {
+		if (caps[tier]?.weekly != null) {
+			caps[tier].fableWeekly ??= caps[tier].weekly / 2;
+		}
+	}
+
 	// sonnetWeekly only lives on max_5x and max_20x (4x relationship)
 	const max5x = caps.claude_max_5x;
 	const max20x = caps.claude_max_20x;
@@ -94,204 +218,23 @@ function fillEstimatedCaps(caps) {
 }
 
 CONFIG.ESTIMATED_CAPS = fillEstimatedCaps(CONFIG.ESTIMATED_CAPS);
-console.log("Final estimated caps:", CONFIG.ESTIMATED_CAPS);
 
 const isElectron = chrome.action === undefined || navigator.userAgent.includes("Electron");
-const FORCE_DEBUG = true; // Set to true to force debug mode
-
-setStorageValue('force_debug', FORCE_DEBUG);
+// Retired keys: the old debug toggles, the Google Drive / GitHub sync-source token cache, and the
+// file token cache that also held metadata estimates (now fileTokensV2).
+browser.storage.local.remove(['force_debug', 'debug_mode_until', 'syncTokens', 'fileTokens']).catch(() => { });
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function RawLog(sender, ...args) {
-	let level = "debug";
-
-	if (typeof args[0] === 'string' && ["debug", "warn", "error"].includes(args[0])) {
-		level = args.shift();
-	}
-
-	const debugUntil = await getStorageValue('debug_mode_until');
-	const now = Date.now();
-
-	if ((!debugUntil || debugUntil <= now) && !FORCE_DEBUG) {
-		return;
-	}
-	if (level === "debug") {
-		console.log("[UsageTracker]", ...args);
-	} else if (level === "warn") {
-		console.warn("[UsageTracker]", ...args);
-	} else if (level === "error") {
-		console.error("[UsageTracker]", ...args);
-	} else {
-		console.log("[UsageTracker]", ...args);
-	}
-
-	const timestamp = new Date().toLocaleString('default', {
-		hour: '2-digit',
-		minute: '2-digit',
-		second: '2-digit',
-		hour12: false,
-		fractionalSecondDigits: 3
-	});
-
-	const logEntry = {
-		timestamp: timestamp,
-		sender: sender,
-		level: level,
-		message: args.map(arg => {
-			if (arg instanceof Error) {
-				return arg.stack || `${arg.name}: ${arg.message}`;
-			}
-			if (typeof arg === 'object') {
-				if (arg === null) return 'null';
-				try {
-					return JSON.stringify(arg, Object.getOwnPropertyNames(arg), 2);
-				} catch (e) {
-					return String(arg);
-				}
-			}
-			return String(arg);
-		}).join(' ')
-	};
-
-	const logs = await getStorageValue('debug_logs', []);
-	logs.push(logEntry);
-
-	if (logs.length > 1000) logs.shift();
-
-	await setStorageValue('debug_logs', logs);
+// sender is the module name ("background", "claude-api", ...). Kept as a function for the existing
+// `Log = (...args) => RawLog('<module>', ...args)` wrappers.
+function RawLog(sender, ...args) {
+	createLogger(sender)(...args);
 }
 
 async function Log(...args) {
 	await RawLog("utils", ...args);
 }
-
-async function containerFetch(url, options = {}, cookieStoreId = null) {
-	if (!cookieStoreId || cookieStoreId === "0" || isElectron) {
-		return fetch(url, options);
-	}
-
-	const headers = options.headers || {};
-	headers['X-Container'] = cookieStoreId;
-	options.headers = headers;
-
-	return fetch(url, options);
-}
-
-const containerRequestMap = new Map();
-
-async function redirectCookie(setCookieStr, requestUrl, storeId) {
-	const parts = setCookieStr.split(';').map(p => p.trim());
-	const [nameValue, ...attrs] = parts;
-	const eqIdx = nameValue.indexOf('=');
-	const name = nameValue.substring(0, eqIdx);
-	const value = nameValue.substring(eqIdx + 1);
-
-	const cookieDetails = { url: requestUrl, name, value, storeId };
-
-	for (const attr of attrs) {
-		const lower = attr.toLowerCase();
-		if (lower.startsWith('domain=')) cookieDetails.domain = attr.split('=')[1];
-		else if (lower.startsWith('path=')) cookieDetails.path = attr.split('=')[1];
-		else if (lower.startsWith('expires=')) {
-			cookieDetails.expirationDate = Math.floor(new Date(attr.substring(8)).getTime() / 1000);
-		}
-		else if (lower === 'secure') cookieDetails.secure = true;
-		else if (lower === 'httponly') cookieDetails.httpOnly = true;
-		else if (lower.startsWith('samesite=')) {
-			const val = attr.split('=')[1].toLowerCase();
-			cookieDetails.sameSite = val === 'none' ? 'no_restriction' : val;
-		}
-	}
-
-	await Log("Redirecting cookie", name, "to store:", storeId);
-	await browser.cookies.set(cookieDetails);
-}
-
-async function addContainerFetchListener() {
-	if (isElectron || !chrome.cookies) return;
-	const stores = await browser.cookies.getAllCookieStores();
-	const isFirefoxContainers = stores[0]?.id === "firefox-default";
-
-	if (isFirefoxContainers) {
-		await Log("We're in firefox with containers, registering blocking listener...");
-		browser.webRequest.onBeforeSendHeaders.addListener(
-			async (details) => {
-				// Check for our container header
-				const containerStore = details.requestHeaders.find(h =>
-					h.name === 'X-Container'
-				)?.value;
-
-				if (containerStore) {
-					containerRequestMap.set(details.requestId, containerStore);
-
-					// Extract domain from URL
-					const url = new URL(details.url);
-					const domain = url.hostname;
-
-					// Get cookies for this domain from the specified container
-					const domainCookies = await browser.cookies.getAll({
-						domain: domain,
-						storeId: containerStore
-					});
-					if (domainCookies.length > 0) {
-						// Create or find the cookie header
-						let cookieHeader = details.requestHeaders.find(h => h.name === 'Cookie');
-						if (!cookieHeader) {
-							cookieHeader = { name: 'Cookie', value: '' };
-							details.requestHeaders.push(cookieHeader);
-						}
-
-						// Format cookies for the header
-						const formattedCookies = domainCookies.map(c => `${c.name}=${c.value}`);
-						cookieHeader.value = formattedCookies.join('; ');
-					}
-
-					// Remove our custom header
-					details.requestHeaders = details.requestHeaders.filter(h =>
-						h.name !== 'X-Container'
-					);
-				}
-
-				return { requestHeaders: details.requestHeaders };
-			},
-			{ urls: ["<all_urls>"] },
-			["blocking", "requestHeaders"]
-		);
-
-		browser.webRequest.onHeadersReceived.addListener(
-			async (details) => {
-				const containerStore = containerRequestMap.get(details.requestId);
-				if (!containerStore) return;
-				containerRequestMap.delete(details.requestId);
-
-				const setCookieHeaders = details.responseHeaders.filter(
-					h => h.name.toLowerCase() === 'set-cookie'
-				);
-				if (setCookieHeaders.length === 0) return;
-
-				await Log("Redirecting", setCookieHeaders.length, "Set-Cookie header(s) from request", details.requestId, "to container:", containerStore);
-				for (const header of setCookieHeaders) {
-					await redirectCookie(header.value, details.url, containerStore);
-				}
-
-				return {
-					responseHeaders: details.responseHeaders.filter(
-						h => h.name.toLowerCase() !== 'set-cookie'
-					)
-				};
-			},
-			{ urls: ["<all_urls>"] },
-			["blocking", "responseHeaders"]
-		);
-
-		browser.webRequest.onErrorOccurred.addListener(
-			(details) => containerRequestMap.delete(details.requestId),
-			{ urls: ["<all_urls>"] }
-		);
-	}
-}
-
 
 class StoredMap {
 	constructor(storageKey) {
@@ -371,6 +314,27 @@ class StoredMap {
 			]);
 		}
 		return entries;
+	}
+
+	// Drops every expired entry in one pass, with a single write.
+	//
+	// get/has/entries only evaluate expiry for the keys they happen to touch, and set() serialises
+	// the map untouched — so a TTL'd entry whose key is never read again is never reclaimed, and
+	// storage grows for as long as new keys keep arriving. Callers that write far more keys than
+	// they read back (pendingRequests: one per conversation, read only if you revisit it) need to
+	// sweep explicitly.
+	async prune() {
+		await this.ensureInitialized();
+		const now = Date.now();
+		let removed = 0;
+		for (const [key, storedValue] of [...this.map.entries()]) {
+			if (storedValue && storedValue.expires && now > storedValue.expires) {
+				this.map.delete(key);
+				removed++;
+			}
+		}
+		if (removed > 0) await setStorageValue(this.storageKey, Array.from(this.map));
+		return removed;
 	}
 
 	async clear() {
@@ -458,9 +422,6 @@ export {
 	isElectron,
 	sleep,
 	RawLog,
-	FORCE_DEBUG,
-	containerFetch,
-	addContainerFetchListener,
 	StoredMap,
 	getOrgStorageKey,
 	getStorageValue,
